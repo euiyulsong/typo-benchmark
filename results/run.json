@@ -1,0 +1,21 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "1000,10000,100000",
+    "edits": "0,1,2,3",
+    "grams": "1,2,3,4,2-3,2-4",
+    "samples": 50,
+    "repeats": 3,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "corpus": null,
+    "queries": null,
+    "output": "results",
+    "timeout": 10
+  },
+  "index": "typo-grid-4c16db8c0de9",
+  "seed": 42,
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors."
+}
