@@ -16,7 +16,7 @@
     "output": "results/korean-hybrid",
     "timeout": 10
   },
-  "index": "typo-grid-57dc0c648edd",
+  "index": "typo-grid-57811abc02ab",
   "seed": 42,
   "note": "Index retained. Latency errors excluded from percentiles; inspect errors."
 }

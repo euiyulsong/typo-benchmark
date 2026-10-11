@@ -142,6 +142,7 @@ def main():
                         if a.hybrid:
                             methods.extend([
                                 (f'parallel_fuzzy_bm25_d{d}','parallel_fuzzy_bm25',d),
+                                (f'term_bm25_d{d}','term_bm25',d),
                                 (f'term_fuzzy_d{d}','term_fuzzy',d),
                                 (f'term_parallel_fuzzy_bm25_d{d}','term_parallel_fuzzy_bm25',d),
                             ])
@@ -182,18 +183,20 @@ def main():
                             took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
                             if options: corrected=options[0]['text']
-                        elif kind in ('term_fuzzy','term_parallel_fuzzy_bm25') and d>0:
+                        elif kind in ('term_bm25','term_fuzzy','term_parallel_fuzzy_bm25') and d>0:
                             r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':{'field':'content','suggest_mode':'missing','sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}}}})
                             took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
                             if options: corrected=options[0]['text']
-                        elif kind=='term' or kind in ('term_fuzzy','term_parallel_fuzzy_bm25'):
+                        elif kind=='term' or kind in ('term_bm25','term_fuzzy','term_parallel_fuzzy_bm25'):
                             candidate_hit=(word==test['clean'])
                         elif name=='bm25_oracle': corrected=test['clean']
                         correction_ms=(time.perf_counter()-cstart)*1000
                         if kind in ('parallel_fuzzy_bm25','term_parallel_fuzzy_bm25'):
                             hybrid_word=corrected if kind=='term_parallel_fuzzy_bm25' else word
                             hits,server=parallel_hybrid_search(hybrid_word,d)
+                        elif kind=='term_bm25':
+                            hits,server=search(corrected)
                         elif kind=='term_fuzzy':
                             hits,server=search(corrected,d)
                         else:

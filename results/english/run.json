@@ -16,7 +16,7 @@
     "output": "results/english",
     "timeout": 10
   },
-  "index": "typo-grid-530b02d0bcc9",
+  "index": "typo-grid-85dfadf80bad",
   "seed": 42,
   "note": "Index retained. Latency errors excluded from percentiles; inspect errors."
 }
