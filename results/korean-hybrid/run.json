@@ -1,0 +1,22 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "50000",
+    "edits": "0,1,2",
+    "grams": "1,2,3,4,2-3,2-4",
+    "samples": 100,
+    "repeats": 1,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "hybrid": true,
+    "corpus": "data/korean/corpus.jsonl",
+    "queries": "data/korean/queries.jsonl",
+    "output": "results/korean-hybrid",
+    "timeout": 10
+  },
+  "index": "typo-grid-57dc0c648edd",
+  "seed": 42,
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors."
+}

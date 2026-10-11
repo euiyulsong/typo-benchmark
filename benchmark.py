@@ -30,6 +30,7 @@ def main():
     p.add_argument('--k', type=int, default=10)
     p.add_argument('--vocab', type=int, default=10000)
     p.add_argument('--words', type=int, default=30)
+    p.add_argument('--hybrid', action='store_true', help='Add BM25+fuzzy parallel hybrid retrieval methods')
     p.add_argument('--corpus', help='JSONL {id, content}; whitespace-tokenized single-term benchmark')
     p.add_argument('--queries', help='JSONL {clean, typo, relevant_ids}; clean/typo must each be ONE term')
     p.add_argument('--output', default='results')
@@ -67,6 +68,7 @@ def main():
     for t in tests:
         if len(t['clean'].split())!=1 or len(t['typo'].split())!=1: raise ValueError('single-token clean/typo required')
         t.setdefault('bucket','clean' if t['clean']==t['typo'] else 'typo')
+        t.setdefault('relevant_ids',[])
     session=requests.Session()
     if os.getenv('ES_API_KEY'): session.headers['Authorization']='ApiKey '+os.environ['ES_API_KEY']
     elif os.getenv('ES_USER'): session.auth=(os.environ['ES_USER'],os.getenv('ES_PASSWORD',''))
@@ -92,6 +94,18 @@ def main():
         if d is not None: opts.update(fuzziness=d,prefix_length=0,max_expansions=a.candidate_limit)
         r=call('POST','/'+index+'/_search?request_cache=false',{'size':a.k,'_source':False,'track_total_hits':False,'timeout':f'{int(a.timeout*1000)}ms','query':{'match':{'content':opts}}})
         return [h['_id'] for h in r['hits']['hits']],r['took']
+    def parallel_hybrid_search(word,d):
+        """Run raw BM25 and fuzzy BM25 concurrently, then fuse ranked IDs by RRF."""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            raw_future=executor.submit(search,word,None)
+            fuzzy_future=executor.submit(search,word,d)
+            raw,fuzzy=raw_future.result(),fuzzy_future.result()
+        scores=defaultdict(float)
+        for hits in (raw[0],fuzzy[0]):
+            for rank,doc_id in enumerate(hits,1): scores[doc_id]+=1/(60+rank)
+        fused=sorted(scores,key=lambda doc_id:(-scores[doc_id],doc_id))[:a.k]
+        return fused,raw[1]+fuzzy[1]
     fields=['docs','vocab','method','bucket','samples','errors','correction_accuracy','false_correction_rate','candidate_recall','recall_at_k','hit_at_k','mrr_at_k','p50_ms','p95_ms','max_ms','correction_p95_ms','es_took_p95_ms','build_seconds','python_peak_mib','index_bytes','index_seconds']
     samplefields=['docs','method','bucket','clean','input','corrected','candidate_hit','recall','hit','rr','latency_ms','correction_ms','es_took_ms','error']
     with (out/'summary.csv').open('w',newline='') as sf,(out/'samples.csv').open('w',newline='') as rf:
@@ -123,7 +137,14 @@ def main():
                 methods=[('bm25_raw',None,None),('bm25_oracle',None,None)]
                 for d in edits:
                     methods.append((f'symspell_d{d}','sym',d))
-                    if d<=2: methods.extend([(f'fuzzy_d{d}','fuzzy',d),(f'term_d{d}','term',d)])
+                    if d<=2:
+                        methods.extend([(f'fuzzy_d{d}','fuzzy',d),(f'term_d{d}','term',d)])
+                        if a.hybrid:
+                            methods.extend([
+                                (f'parallel_fuzzy_bm25_d{d}','parallel_fuzzy_bm25',d),
+                                (f'term_fuzzy_d{d}','term_fuzzy',d),
+                                (f'term_parallel_fuzzy_bm25_d{d}','term_parallel_fuzzy_bm25',d),
+                            ])
                     for spec in specs: methods.append((f'ngram_{spec}_d{d}',spec,d))
                 rng.shuffle(methods)
                 print(f'DOCS={target} VOCAB={len(df)} eligible={len(active)}',flush=True)
@@ -161,10 +182,23 @@ def main():
                             took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
                             if options: corrected=options[0]['text']
-                        elif kind=='term': candidate_hit=(word==test['clean'])
+                        elif kind in ('term_fuzzy','term_parallel_fuzzy_bm25') and d>0:
+                            r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':{'field':'content','suggest_mode':'missing','sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}}}})
+                            took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
+                            candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
+                            if options: corrected=options[0]['text']
+                        elif kind=='term' or kind in ('term_fuzzy','term_parallel_fuzzy_bm25'):
+                            candidate_hit=(word==test['clean'])
                         elif name=='bm25_oracle': corrected=test['clean']
                         correction_ms=(time.perf_counter()-cstart)*1000
-                        hits,server=search(corrected,d if kind=='fuzzy' else None); took+=server
+                        if kind in ('parallel_fuzzy_bm25','term_parallel_fuzzy_bm25'):
+                            hybrid_word=corrected if kind=='term_parallel_fuzzy_bm25' else word
+                            hits,server=parallel_hybrid_search(hybrid_word,d)
+                        elif kind=='term_fuzzy':
+                            hits,server=search(corrected,d)
+                        else:
+                            hits,server=search(corrected,d if kind=='fuzzy' else None)
+                        took+=server
                         return corrected,candidate_hit,hits,(time.perf_counter()-start)*1000,correction_ms,took
                     for test,_ in active[:min(5,len(active))]:
                         try: execute(test)

@@ -176,3 +176,51 @@ python3 benchmark.py \
 - Hugging Face dataset card: https://huggingface.co/datasets/klue/klue
 - 데이터셋 라이선스: CC-BY-SA-4.0. 데이터 사용 시 원 저작물의 라이선스와 attribution 조건을 따르세요.
 - 논문: Park et al., [KLUE: Korean Language Understanding Evaluation](https://arxiv.org/abs/2105.09680), 2021.
+
+## 요청된 조합 실험: clean/typo × raw/fuzzy/parallel/hybrid
+
+`benchmark.py --hybrid`는 다음 결과를 추가합니다.
+
+- `parallel_fuzzy_bm25_d1/d2`: 입력 원문으로 BM25와 fuzzy BM25를 동시에 요청하고, 두 결과를 Reciprocal Rank Fusion(RRF, 상수 60)으로 결합합니다.
+- `term_d1/d2`: Elasticsearch term suggester의 첫 후보로 BM25 검색합니다.
+- `fuzzy_d1/d2`: fuzzy match로 직접 검색합니다.
+- `bm25_raw`: 입력 그대로의 BM25 검색. `clean` bucket은 오타 없는 query, `typo_1/2/3` bucket은 오타 query를 측정합니다.
+
+`term suggest 후 fuzzy` 실험은 suggestion 후보를 fuzzy 검색에 넣는 `term_fuzzy_d1/d2`로 기록합니다. 먼저 suggester 후보를 얻고 그 후보 문자열을 fuzzy query로 검색하며 두 ES 요청 시간을 함께 기록합니다. `term suggest 후 fuzzy+BM25 병렬`은 `term_parallel_fuzzy_bm25_d1/d2`이며, suggestion 이후 선택된 후보로 fuzzy와 일반 BM25를 병렬 실행하고 RRF 결합합니다. `--hybrid`에서 세 추가 방법이 함께 활성화됩니다.
+
+### 공개 영어 데이터: AG News
+
+영어는 Hugging Face의 [`fancyzhx/ag_news`](https://huggingface.co/datasets/fancyzhx/ag_news) 공개 뉴스 데이터의 train/test 본문을 받아 동일한 clean, 1/2/3자 합성 치환 오타 query를 생성합니다. upstream 데이터 카드의 라이선스는 MIT입니다. 문서는 원문 텍스트를 corpus로 만들고, 각 query의 qrel은 정답 토큰이 처음 나타나는 문서입니다. 따라서 자연발생 오타의 현실성을 평가하는 실험은 아닙니다.
+
+```bash
+pip install datasets requests symspellpy rapidfuzz
+python3 english_eval.py --output data/english --max-docs 50000 --queries 100 --min-frequency 2 --seed 42
+python3 benchmark.py --corpus data/english/corpus.jsonl --queries data/english/queries.jsonl \
+  --sizes 1000,10000,50000 --edits 0,1,2 --samples 100 --repeats 3 \
+  --hybrid --output results/english
+```
+
+한국어도 같은 검색 조합은 `--hybrid`를 붙여 실행합니다.
+
+```bash
+python3 benchmark.py --corpus data/korean/corpus.jsonl --queries data/korean/queries.jsonl \
+  --sizes 1000,10000,50000 --edits 0,1,2 --samples 100 --repeats 3 \
+  --hybrid --output results/korean-hybrid
+```
+
+출력의 `summary.csv`는 clean/typo bucket별 최종 검색 MRR/Hit@10과 지연을 기록하고, `samples.csv`는 query 단위 결과를 보존합니다. `parallel_fuzzy_bm25`의 `es_took_ms`는 두 서버 took의 합계이며 클라이언트 latency에는 실제 병렬 왕복이 반영됩니다. 실행 전 Elasticsearch가 켜져 있어야 합니다.
+
+### 실행 결과 (2026-10-12, 50,000문서, seed=42)
+
+KLUE-YNAT 한국어와 AG News 영어 각각 100개 query term을 clean 및 1/2/3자 치환 typo로 만들고, repeats=1로 요청된 검색군을 비교했습니다. 아래는 100개 표본이 있는 clean/typo_1/typo_2 각 bucket의 **MRR@10 / Hit@10**입니다. typo_3 및 모든 방법의 latency/query 단위 값은 결과 CSV에 있습니다. 오류는 두 데이터셋 모두 0건입니다.
+
+| 데이터/입력 | BM25 raw | fuzzy d1 | fuzzy d2 | 병렬 fuzzy+BM25 d1 | 병렬 fuzzy+BM25 d2 | term→fuzzy d1 | term→fuzzy d2 | term→병렬 fuzzy+BM25 d1 | term→병렬 fuzzy+BM25 d2 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 한국어 clean | 0.556/81% | 0.545/82% | 0.536/79% | 0.561/82% | 0.557/79% | 0.545/82% | 0.536/79% | 0.561/82% | 0.557/79% |
+| 한국어 typo_1 | 0.000/0% | 0.450/74% | 0.419/75% | 0.450/74% | 0.419/75% | 0.453/71% | 0.444/69% | 0.462/71% | 0.459/69% |
+| 한국어 typo_2 | 0.000/0% | 0.000/0% | 0.208/36% | 0.000/0% | 0.208/36% | 0.000/0% | 0.218/35% | 0.000/0% | 0.221/35% |
+| 영어 clean | 0.219/39% | 0.252/50% | 0.170/31% | 0.326/59% | 0.269/50% | 0.236/51% | 0.186/34% | 0.324/60% | 0.291/54% |
+| 영어 typo_1 | 0.000/0% | 0.207/36% | 0.172/36% | 0.207/36% | 0.172/36% | 0.169/36% | 0.135/25% | 0.203/41% | 0.203/39% |
+| 영어 typo_2 | 0.000/0% | 0.000/0% | 0.124/26% | 0.000/0% | 0.124/26% | 0.000/0% | 0.107/20% | 0.000/0% | 0.125/22% |
+
+기본 term suggester의 단독 결과는 `term_d1/d2` 행을, clean/typo_1/2/3 전체 검색 결과는 전체 summary에서 확인할 수 있습니다. typo_3는 3자 무작위 치환입니다. 합성 오타 방식, 첫 등장 문서 하나만 qrel로 쓰는 방식, AG News query 후보의 단어 빈도 분포가 지표에 영향을 줍니다. 재현용 산출물: `results/korean-hybrid/{summary.csv,samples.csv,run.json}`, `results/english/{summary.csv,samples.csv,run.json}`. 데이터셋 메타데이터는 각 폴더의 `dataset.json`에 있습니다.

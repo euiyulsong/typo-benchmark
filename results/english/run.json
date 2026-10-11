@@ -1,0 +1,22 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "50000",
+    "edits": "0,1,2",
+    "grams": "1,2,3,4,2-3,2-4",
+    "samples": 100,
+    "repeats": 1,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "hybrid": true,
+    "corpus": "data/english/corpus.jsonl",
+    "queries": "data/english/queries.jsonl",
+    "output": "results/english",
+    "timeout": 10
+  },
+  "index": "typo-grid-530b02d0bcc9",
+  "seed": 42,
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors."
+}
