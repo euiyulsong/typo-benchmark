@@ -1,0 +1,36 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "1000,10000,50000",
+    "edits": "0,1,2,3",
+    "grams": "1,2,3,4,2-3,2-4",
+    "samples": 100,
+    "repeats": 3,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "corpus": "data/korean/corpus.jsonl",
+    "queries": "data/korean/queries.jsonl",
+    "output": "results/korean",
+    "timeout": 10
+  },
+  "index": "typo-grid-02d3158aa75f",
+  "seed": 42,
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors.",
+  "dataset": {
+    "dataset": "klue/klue",
+    "config": "ynat",
+    "license": "CC-BY-SA-4.0",
+    "source": "KLUE-Y 데이터 title fields from train then validation",
+    "docs": 50000,
+    "vocabulary_terms": 76391,
+    "candidate_terms": 21022,
+    "query_terms": 100,
+    "query_rows": 400,
+    "min_frequency": 2,
+    "seed": 42,
+    "typo_generation": "replace 1/2/3 randomly selected Hangul syllable blocks with random precomposed Hangul syllables",
+    "note": "Synthetic syllable substitutions, not naturally observed typos; evaluate only retrieval on this derived task."
+  }
+}

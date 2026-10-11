@@ -1,0 +1,15 @@
+{
+  "dataset": "klue/klue",
+  "config": "ynat",
+  "license": "CC-BY-SA-4.0",
+  "source": "KLUE-Y 데이터 title fields from train then validation",
+  "docs": 50000,
+  "vocabulary_terms": 76391,
+  "candidate_terms": 21022,
+  "query_terms": 100,
+  "query_rows": 400,
+  "min_frequency": 2,
+  "seed": 42,
+  "typo_generation": "replace 1/2/3 randomly selected Hangul syllable blocks with random precomposed Hangul syllables",
+  "note": "Synthetic syllable substitutions, not naturally observed typos; evaluate only retrieval on this derived task."
+}

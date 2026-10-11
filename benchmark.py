@@ -192,7 +192,10 @@ def main():
                     del obj
         finally:
             session.close()
-            (out/'run.json').write_text(json.dumps({'args':vars(a),'index':index,'seed':42,'note':'Index retained. Latency errors excluded from percentiles; inspect errors.'},indent=2))
+            run={'args':vars(a),'index':index,'seed':42,'note':'Index retained. Latency errors excluded from percentiles; inspect errors.'}
+            metadata=out/'dataset.json'
+            if metadata.exists(): run['dataset']=json.loads(metadata.read_text(encoding='utf-8'))
+            (out/'run.json').write_text(json.dumps(run,ensure_ascii=False,indent=2))
             print('Results:',out,'Index retained:',index)
 
 if __name__=='__main__': main()

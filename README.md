@@ -120,3 +120,57 @@ ngram 구현은 전체 후보 overlap을 수집/정렬하므로 흔한 unigram�
 문서 수와 함께 vocab 열을 보세요. 고정 어휘에 문서만 늘리는 경우와 새 어휘까지 늘어나는 경우의 후보 탐색 비용은 다릅니다. 기본 vocab을 달리해 별도 실행하거나 실제 corpus를 이용하세요.
 
 한국어는 완성형 음절 단위 character distance입니다. 자모 분해나 두벌식 키 입력 기준 거리 실험은 포함하지 않습니다.
+
+## 한국어 평가: KLUE-YNAT 뉴스 제목
+
+한국어 공개 데이터로 추가 평가했습니다. 원본은 [KLUE](https://github.com/KLUE-benchmark/KLUE)의 YNAT 뉴스 제목 데이터이며, Hugging Face의 [`klue/klue`, `ynat`](https://huggingface.co/datasets/klue/klue)에서 가져왔습니다. 데이터셋 라이선스는 **CC-BY-SA-4.0**입니다. 이 저장소에는 KLUE 원문을 재배포하지 않고, 다운로드/변환 스크립트와 평가 결과만 포함합니다.
+
+실행 조건: train 뒤 validation에서 비어 있지 않은 제목 50,000개를 사용하고, 제목에 2회 이상 등장한 3음절 이상 한글 토큰에서 seed=42로 100개를 뽑았습니다. 각 토큰에 대해 정상어와 한글 완성형 음절을 무작위 치환한 1/2/3자 오타를 만들었습니다. 검색 관련 문서는 정답 토큰이 등장한 첫 문서로 지정했습니다. 이 방식은 **합성 음절 치환 실험**이지 실제 한국어 입력 오타 평가가 아닙니다. 띄어쓰기, 자모 오입력, 두벌식 인접키, 형태소/조사 오류를 반영하지 않으며, 단어 빈도 필터가 흔한 토큰 위주 표본을 만듭니다.
+
+재현:
+
+```bash
+pip install datasets requests symspellpy rapidfuzz
+python3 korean_eval.py --output data/korean --max-docs 50000 --queries 100 --min-frequency 2 --seed 42
+python3 benchmark.py \
+  --corpus data/korean/corpus.jsonl --queries data/korean/queries.jsonl \
+  --sizes 1000,10000,50000 --edits 0,1,2,3 \
+  --grams 1,2,3,4,2-3,2-4 --samples 100 --repeats 3 \
+  --output results/korean
+```
+
+실행 파일: [`korean_eval.py`](korean_eval.py), 생성 데이터 메타데이터: [`results/korean/dataset.json`](results/korean/dataset.json), 전체 지표: [`results/korean/summary.csv`](results/korean/summary.csv), 요청별 로그: [`results/korean/samples.csv`](results/korean/samples.csv), 설정: [`results/korean/run.json`](results/korean/run.json). 한국어 실험은 최대 50,000문서까지만 진행했습니다. 1,000문서 단계에서는 관련 정답이 있는 clean query가 13개(오타 bucket별 39건), 10,000문서에서는 clean query 55개(오타 bucket별 165건), 50,000문서에서 clean query 100개(오타 bucket별 300건, 각 100 query × 3 repeats)였습니다. 전체 432 summary 행에서 요청 오류는 0건입니다.
+
+### 한국어 결과 (50,000문서)
+
+정확도는 선택된 교정어가 clean term과 같은 비율이며, MRR@10은 관련 문서 순위를 평가합니다. 지연은 교정과 검색을 합친 클라이언트 p95(ms)입니다. `fuzzy`는 교정어를 반환하지 않으므로 정확도는 N/A입니다.
+
+| 방법 | 1음절 치환 정확도 / MRR | 2음절 치환 정확도 / MRR | 3음절 치환 정확도 / MRR | p95 ms (1 / 2 / 3) |
+|---|---:|---:|---:|---:|
+| BM25 raw | 0% / 0.00 | 0% / 0.00 | 0% / 0.00 | 2.11 / 2.07 / 2.16 |
+| SymSpell d1 | 67% / 0.40 | 0% / 0.00 | 0% / 0.00 | 2.71 / 2.47 / 2.57 |
+| SymSpell d2 | 67% / 0.40 | 25% / 0.15 | 0% / 0.00 | 2.71 / 6.52 / 2.76 |
+| SymSpell d3 | 67% / 0.40 | 25% / 0.15 | 8% / 0.06 | 2.85 / 6.76 / 73.06 |
+| Elasticsearch term d2 | 76% / 0.45 | 19% / 0.11 | 0% / 0.00 | 6.25 / 6.41 / 6.08 |
+| Elasticsearch fuzzy d1 | N/A / 0.45 | N/A / 0.00 | N/A / 0.00 | 3.55 / 3.36 / 3.36 |
+| Elasticsearch fuzzy d2 | N/A / 0.42 | N/A / 0.21 | N/A / 0.00 | 6.12 / 6.12 / 5.74 |
+| Python bigram n-gram d2 | 60% / 0.36 | 16% / 0.11 | 0% / 0.00 | 2.86 / 2.66 / 2.50 |
+
+이 설정에서는 SymSpell이 d1에서도 정상 입력의 2%를 바꿨고, d2/d3에서는 5%를 바꿨습니다. 오타 평가에서 SymSpell 정답 후보 recall은 1자 95%, 2자 92%, d3의 3자 78%였지만, 후보를 frequency 우선으로 고르는 현재 구현의 최종 교정 정확도는 각각 67%, 25%, 8%였습니다. 즉 **후보에 정답이 포함되는 것과 정답을 최종 선택하는 것은 다릅니다.** d3의 긴 단어 lookup은 p95 73ms로 느려졌습니다. 이 실험 결과만으로 한국어 서비스에 SymSpell을 권장할 수 없으며, 세 방법 모두 실제 자연 오타용으로 검증되지 않았습니다.
+
+샘플 후보/교정 사례 (SymSpell d2, 동일한 세팅의 요청별 CSV에서 발췌):
+
+| 정답 | 합성 입력 | 선택 교정어 | 정답이 후보에 포함 |
+|---|---|---|---|
+| `회원수` | `회셆수` | `회수` | 예 |
+| `이용객` | `션갺객` | `관광객` | 예 |
+| `나전칠기` | `붿전퓏기` | `전투기` | 예 |
+
+오류 문자가 무작위 한글 음절이라 자연스러운 오타가 아닙니다. 예시와 점수는 방법의 한국어 우열을 확정하지 않으며, 실제 query typo/qrels로 다시 측정해야 합니다.
+
+### 출처 및 라이선스
+
+- KLUE Benchmark: https://github.com/KLUE-benchmark/KLUE
+- Hugging Face dataset card: https://huggingface.co/datasets/klue/klue
+- 데이터셋 라이선스: CC-BY-SA-4.0. 데이터 사용 시 원 저작물의 라이선스와 attribution 조건을 따르세요.
+- 논문: Park et al., [KLUE: Korean Language Understanding Evaluation](https://arxiv.org/abs/2105.09680), 2021.
