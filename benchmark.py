@@ -30,7 +30,7 @@ def main():
     p.add_argument('--k', type=int, default=10)
     p.add_argument('--vocab', type=int, default=10000)
     p.add_argument('--words', type=int, default=30)
-    p.add_argument('--hybrid', action='store_true', help='Add BM25+fuzzy parallel hybrid retrieval methods')
+    p.add_argument('--hybrid', action='store_true', help='Add parallel BM25/fuzzy/suggestion combinations')
     p.add_argument('--auto', action='store_true', help='Add fuzzy AUTO, term suggestion AUTO, completion, and their combinations')
     p.add_argument('--es-ngram', action='store_true', help='Add Elasticsearch character ngram retrieval and parallel combinations')
     p.add_argument('--oom-rss-mib', type=int, default=0, help='Abort cleanly when process RSS exceeds this MiB (0 disables)')
@@ -117,20 +117,22 @@ def main():
         opts=r['suggest']['completion'][0]['options'] if r['suggest']['completion'] else []
         return (opts[0]['text'] if opts else word),r['took'],opts
     def parallel_hybrid_search(word,d,kind='fuzzy'):
-        """Run raw BM25 and one alternate retrieval concurrently, then fuse by RRF."""
+        """Run requested retrievals concurrently, then fuse ranked IDs by RRF."""
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            raw_future=executor.submit(search,word,None)
-            if kind=='ngram': alternate_future=executor.submit(ngram_search,word)
-            elif kind=='completion': alternate_future=executor.submit(_completion_retrieval,word)
-            else: alternate_future=executor.submit(search,word,'AUTO' if kind=='auto' else d)
-            raw,alternate=raw_future.result(),alternate_future.result()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures=[executor.submit(search,word,None)]
+            if kind in ('ngram','fuzzy_ngram'):
+                futures.append(executor.submit(ngram_search,word))
+            if kind in ('fuzzy','auto','fuzzy_ngram'):
+                futures.append(executor.submit(search,word,'AUTO' if kind=='auto' else d))
+            if kind=='completion':
+                futures.append(executor.submit(_completion_retrieval,word))
+            results=[future.result() for future in futures]
         scores=defaultdict(float)
-        alternate_hits=alternate[0]
-        for hits in (raw[0],alternate_hits):
+        for hits,_ in results:
             for rank,doc_id in enumerate(hits,1): scores[doc_id]+=1/(60+rank)
         fused=sorted(scores,key=lambda doc_id:(-scores[doc_id],doc_id))[:a.k]
-        return fused,raw[1]+alternate[1]
+        return fused,sum(took for _,took in results)
     def _completion_retrieval(word):
         candidate,took,_=completion_search(word)
         hits,search_took=search(candidate)
@@ -186,6 +188,7 @@ def main():
                     if a.es_ngram:
                         methods.append((f'es_ngram_d{d}','es_ngram',d))
                         if a.hybrid: methods.append((f'parallel_es_ngram_bm25_d{d}','parallel_es_ngram_bm25',d))
+                        if a.hybrid and d<=2: methods.append((f'parallel_fuzzy_es_ngram_d{d}','parallel_fuzzy_es_ngram',d))
                     if a.auto:
                         methods.append((f'completion_auto_d{d}','completion_auto',d))
                         if a.hybrid: methods.append((f'parallel_completion_bm25_d{d}','parallel_completion_bm25',d))
@@ -240,9 +243,9 @@ def main():
                             candidate_hit=(word==test['clean'])
                         elif name=='bm25_oracle': corrected=test['clean']
                         correction_ms=(time.perf_counter()-cstart)*1000
-                        if kind in ('parallel_fuzzy_bm25','parallel_fuzzy_auto_bm25','term_parallel_fuzzy_bm25','term_parallel_auto','parallel_es_ngram_bm25','parallel_completion_bm25'):
+                        if kind in ('parallel_fuzzy_bm25','parallel_fuzzy_auto_bm25','term_parallel_fuzzy_bm25','term_parallel_auto','parallel_es_ngram_bm25','parallel_completion_bm25','parallel_fuzzy_es_ngram'):
                             hybrid_word=corrected if kind in ('term_parallel_fuzzy_bm25','term_parallel_auto') else word
-                            combo={'parallel_es_ngram_bm25':'ngram','parallel_completion_bm25':'completion','term_parallel_auto':'auto','parallel_fuzzy_auto_bm25':'auto'}.get(kind,'fuzzy')
+                            combo={'parallel_es_ngram_bm25':'ngram','parallel_completion_bm25':'completion','term_parallel_auto':'auto','parallel_fuzzy_auto_bm25':'auto','parallel_fuzzy_es_ngram':'fuzzy_ngram'}.get(kind,'fuzzy')
                             hits,server=parallel_hybrid_search(hybrid_word,d,combo)
                         elif kind=='term_bm25':
                             hits,server=search(corrected)

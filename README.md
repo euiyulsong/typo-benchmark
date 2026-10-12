@@ -56,7 +56,13 @@ python3 benchmark.py --sizes 100 --vocab 100 --samples 5 --repeats 1 --grams 2,3
 
 `--auto`는 Elasticsearch `fuzziness=AUTO`, `term` suggester `suggest_mode=always`(정상어도 후보로 바꿀 수 있어 false correction도 확인), 그리고 completion suggester(prefix completion)를 비교합니다. fuzzy/term/completion을 raw BM25 및 term→fuzzy와 함께 평가하고, `--hybrid`를 켜면 raw BM25와 해당 검색 결과의 RRF 병렬 조합도 추가합니다. Completion은 typo 교정기가 아니라 입력이 사전 prefix일 때 이어지는 토큰을 제안하는 방식이므로, typo 검색에선 후보 hit/검색 품질이 낮을 수 있습니다. prefix query 이외의 입력을 completion이 고치는 것으로 해석하지 마세요.
 
-`--es-ngram`은 별도 2–3 character ngram analyzer 필드로 직접 검색합니다. `--hybrid`와 같이 쓰면 raw BM25와 ngram 검색을 병렬 실행하고 RRF로 합칩니다. 기존 `ngram_*`은 Python 메모리 후보 교정 방식으로, 둘은 구현과 측정 범위가 다릅니다. completion 및 ngram의 추가 필드로 ES 색인 크기/색인 시간이 증가합니다.
+`--es-ngram`은 별도 2–3 character ngram analyzer 필드로 직접 검색합니다. `--hybrid`와 같이 쓰면 raw BM25+ngram 병렬 RRF(`parallel_es_ngram_bm25_d*`)와 fuzzy+ngram 병렬 RRF(`parallel_fuzzy_es_ngram_d*`)를 비교합니다. 3-way raw BM25+fuzzy+ngram을 따로 보고 싶다면 향후 옵션 확장이 필요하며, 현재 두 조합은 비교가 쉽도록 개별 경로입니다. 기존 `ngram_*`은 Python 메모리 후보 교정 방식으로, 둘은 구현과 측정 범위가 다릅니다. completion 및 ngram의 추가 필드로 ES 색인 크기/색인 시간이 증가합니다.
+
+대량 실행에서는 결과 폴더를 새 경로로 지정해 기존 결과를 덮어쓰지 말고, 완료 뒤 다음 스크립트로 특정 corpus 크기의 비교용 compact CSV를 만들 수 있습니다:
+
+```bash
+python3 summarize_results.py results/english-full/summary.csv --docs 50000 --output results/english-full/summary-50000.csv
+```
 
 단계적 corpus 크기 실험은 기존처럼 모든 단계에 같은 데이터 prefix를 사용하며, corpus 파일이 각 요청 크기보다 작으면 실제 크기까지만 진행합니다. 1억 문서를 시도할 땐 우선 충분한 디스크/RAM이 있는 전용 Elasticsearch를 준비하고 OOM guard를 지정하세요. Guard는 benchmark 프로세스의 RSS를 방법/요청 경계에서 확인해 초과 시 결과 파일을 flush한 뒤 종료합니다. Elasticsearch JVM/컨테이너 OOM은 별도 감시해야 하며, ES가 OOM으로 죽는 것을 이 프로세스가 사전에 보장해 막지는 못합니다.
 
