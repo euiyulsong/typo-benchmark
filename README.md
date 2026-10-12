@@ -52,6 +52,27 @@ python3 benchmark.py --url http://localhost:9200 \
 python3 benchmark.py --sizes 100 --vocab 100 --samples 5 --repeats 1 --grams 2,3 --edits 0,1
 ```
 
+### Auto / completion / Elasticsearch n-gram / 스케일링 그리드
+
+`--auto`는 Elasticsearch `fuzziness=AUTO`, `term` suggester `suggest_mode=always`(정상어도 후보로 바꿀 수 있어 false correction도 확인), 그리고 completion suggester(prefix completion)를 비교합니다. fuzzy/term/completion을 raw BM25 및 term→fuzzy와 함께 평가하고, `--hybrid`를 켜면 raw BM25와 해당 검색 결과의 RRF 병렬 조합도 추가합니다. Completion은 typo 교정기가 아니라 입력이 사전 prefix일 때 이어지는 토큰을 제안하는 방식이므로, typo 검색에선 후보 hit/검색 품질이 낮을 수 있습니다. prefix query 이외의 입력을 completion이 고치는 것으로 해석하지 마세요.
+
+`--es-ngram`은 별도 2–3 character ngram analyzer 필드로 직접 검색합니다. `--hybrid`와 같이 쓰면 raw BM25와 ngram 검색을 병렬 실행하고 RRF로 합칩니다. 기존 `ngram_*`은 Python 메모리 후보 교정 방식으로, 둘은 구현과 측정 범위가 다릅니다. completion 및 ngram의 추가 필드로 ES 색인 크기/색인 시간이 증가합니다.
+
+단계적 corpus 크기 실험은 기존처럼 모든 단계에 같은 데이터 prefix를 사용하며, corpus 파일이 각 요청 크기보다 작으면 실제 크기까지만 진행합니다. 1억 문서를 시도할 땐 우선 충분한 디스크/RAM이 있는 전용 Elasticsearch를 준비하고 OOM guard를 지정하세요. Guard는 benchmark 프로세스의 RSS를 방법/요청 경계에서 확인해 초과 시 결과 파일을 flush한 뒤 종료합니다. Elasticsearch JVM/컨테이너 OOM은 별도 감시해야 하며, ES가 OOM으로 죽는 것을 이 프로세스가 사전에 보장해 막지는 못합니다.
+
+```bash
+python3 benchmark.py --corpus large-corpus.jsonl --queries queries.jsonl \
+  --sizes 1000,10000,100000,1000000,10000000,100000000 \
+  --edits 0,1,2 --hybrid --auto --es-ngram \
+  --samples 100 --repeats 3 --oom-rss-mib 8192 --output results/scale
+```
+
+실험 종료 후 `summary.csv`는 MRR/Hit, correction/candidate 지표와 p50/p95/max, ES took, build/Python peak, ES index bytes/index time를 기록합니다. `--oom-rss-mib` guard는 요청/방법 경계의 프로세스 peak RSS를 확인합니다(`resource.getrusage`는 현재 RSS가 아니라 실행 이후 peak). `samples.csv`는 query 단위 품질/지연/error를 보존합니다. 1억까지의 실행은 긴 시간과 대용량 디스크/메모리가 필요하므로, corpus가 충분하고 실제 실행 환경을 확보한 후 진행하세요. 크기가 커질수록 `--samples`를 적절히 제한하고, ES heap/disk를 포함한 별도 자원 모니터링을 권장합니다.
+
+### 확장 기능 smoke test (2026-10-13)
+
+Elasticsearch 8.15.5 단일 노드에서 `--sizes 100 --vocab 20 --samples 5 --repeats 1 --grams 2 --edits 0,1 --auto --es-ngram --hybrid --oom-rss-mib 4096`로 모든 신규 경로를 실행했습니다. smoke 결과는 임시 `/tmp/opencode/typo-smoke-final`에 생성했으며, 작은 합성 데이터이므로 제품 성능 결론으로 해석하지 않습니다. 1천만/1억 단계 및 기존 전체 실험의 재실행은 아직 수행되지 않았습니다. 이 실행 환경은 대규모 corpus를 보유하지 않고 ES도 실험을 위해 임시 기동한 상태입니다. 전체 재실험에는 별도 대용량 corpus와 자원/실행 시간이 필요합니다.
+
 매번 새 `typo-grid-*` 인덱스 생성. 기존 인덱스를 변경/삭제하지 않습니다. 종료 후 출력된 테스트 인덱스만 직접 삭제하세요. 인증은 ES_API_KEY 또는 ES_USER/ES_PASSWORD 환경변수로 설정합니다. TLS 인증서 검증은 켜져 있습니다.
 
 ## 방식

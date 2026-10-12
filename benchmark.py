@@ -31,6 +31,9 @@ def main():
     p.add_argument('--vocab', type=int, default=10000)
     p.add_argument('--words', type=int, default=30)
     p.add_argument('--hybrid', action='store_true', help='Add BM25+fuzzy parallel hybrid retrieval methods')
+    p.add_argument('--auto', action='store_true', help='Add fuzzy AUTO, term suggestion AUTO, completion, and their combinations')
+    p.add_argument('--es-ngram', action='store_true', help='Add Elasticsearch character ngram retrieval and parallel combinations')
+    p.add_argument('--oom-rss-mib', type=int, default=0, help='Abort cleanly when process RSS exceeds this MiB (0 disables)')
     p.add_argument('--corpus', help='JSONL {id, content}; whitespace-tokenized single-term benchmark')
     p.add_argument('--queries', help='JSONL {clean, typo, relevant_ids}; clean/typo must each be ONE term')
     p.add_argument('--output', default='results')
@@ -40,7 +43,7 @@ def main():
     edits=sorted(set(map(int,a.edits.split(','))))
     specs=a.grams.split(',')
     nsets={s: list(range(int(s.split('-')[0]),int(s.split('-')[-1])+1)) for s in specs}
-    if min(sizes)<1 or not set(edits)<=set(range(4)) or min(a.samples,a.repeats,a.k,a.vocab,a.words,a.candidate_limit)<1 or a.timeout<=0 or any(min(ns)<1 for ns in nsets.values()):
+    if min(sizes)<1 or not set(edits)<=set(range(4)) or min(a.samples,a.repeats,a.k,a.vocab,a.words,a.candidate_limit)<1 or a.timeout<=0 or (a.oom_rss_mib<0) or any(min(ns)<1 for ns in nsets.values()):
         p.error('positive values required; edit distances supported: 0..3')
     if bool(a.corpus)!=bool(a.queries): p.error('--corpus and --queries must be supplied together')
     out=Path(a.output); out.mkdir(parents=True,exist_ok=True)
@@ -84,28 +87,54 @@ def main():
         return result
     index='typo-grid-'+uuid.uuid4().hex[:12]
     try:
-        call('PUT','/'+index,{'settings':{'number_of_shards':1,'number_of_replicas':0,'refresh_interval':'-1'},'mappings':{'properties':{'content':{'type':'text','analyzer':'whitespace','similarity':'BM25'}}}})
+        settings={'number_of_shards':1,'number_of_replicas':0,'refresh_interval':'-1'}
+        mappings={'properties':{'content':{'type':'text','analyzer':'whitespace','similarity':'BM25'}}}
+        if a.es_ngram:
+            settings['analysis']={'tokenizer':{'typo_ngram_tokenizer':{'type':'ngram','min_gram':2,'max_gram':3}},'analyzer':{'typo_ngram':{'type':'custom','tokenizer':'typo_ngram_tokenizer'}},'normalizer':{'lowercase_keyword':{'type':'custom','filter':['lowercase']}}}
+            mappings['properties']['ngram_content']={'type':'text','analyzer':'typo_ngram','search_analyzer':'whitespace'}
+            mappings['properties']['ngram_term']={'type':'keyword','normalizer':'lowercase_keyword'}
+            mappings['properties']['suggest']={'type':'completion','analyzer':'whitespace','preserve_separators':False,'max_input_length':50}
+        call('PUT','/'+index,{'settings':settings,'mappings':mappings})
     except (RuntimeError,requests.HTTPError) as e:
         session.close()
         p.error(str(e))
     print('New index:',index,flush=True)
     def search(word,d=None):
         opts={'query':word}
-        if d is not None: opts.update(fuzziness=d,prefix_length=0,max_expansions=a.candidate_limit)
+        if d is not None: opts.update(fuzziness='AUTO' if d=='AUTO' else d,prefix_length=0,max_expansions=a.candidate_limit)
         r=call('POST','/'+index+'/_search?request_cache=false',{'size':a.k,'_source':False,'track_total_hits':False,'timeout':f'{int(a.timeout*1000)}ms','query':{'match':{'content':opts}}})
         return [h['_id'] for h in r['hits']['hits']],r['took']
-    def parallel_hybrid_search(word,d):
-        """Run raw BM25 and fuzzy BM25 concurrently, then fuse ranked IDs by RRF."""
+    def ngram_search(word):
+        r=call('POST','/'+index+'/_search?request_cache=false',{'size':a.k,'_source':False,'track_total_hits':False,'query':{'bool':{'should':[{'match':{'ngram_content':{'query':word,'operator':'or'}}},{'term':{'ngram_term':word.lower()}}],'minimum_should_match':1}}})
+        return [h['_id'] for h in r['hits']['hits']],r['took']
+    def suggest(word,mode,d):
+        term={'field':'content','suggest_mode':mode,'sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}
+        r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':term}}})
+        opts=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
+        return (opts[0]['text'] if opts else word),r['took'],opts
+    def completion_search(word):
+        r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'completion':{'prefix':word,'completion':{'field':'suggest','size':a.candidate_limit,'skip_duplicates':True}}}})
+        opts=r['suggest']['completion'][0]['options'] if r['suggest']['completion'] else []
+        return (opts[0]['text'] if opts else word),r['took'],opts
+    def parallel_hybrid_search(word,d,kind='fuzzy'):
+        """Run raw BM25 and one alternate retrieval concurrently, then fuse by RRF."""
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as executor:
             raw_future=executor.submit(search,word,None)
-            fuzzy_future=executor.submit(search,word,d)
-            raw,fuzzy=raw_future.result(),fuzzy_future.result()
+            if kind=='ngram': alternate_future=executor.submit(ngram_search,word)
+            elif kind=='completion': alternate_future=executor.submit(_completion_retrieval,word)
+            else: alternate_future=executor.submit(search,word,'AUTO' if kind=='auto' else d)
+            raw,alternate=raw_future.result(),alternate_future.result()
         scores=defaultdict(float)
-        for hits in (raw[0],fuzzy[0]):
+        alternate_hits=alternate[0]
+        for hits in (raw[0],alternate_hits):
             for rank,doc_id in enumerate(hits,1): scores[doc_id]+=1/(60+rank)
         fused=sorted(scores,key=lambda doc_id:(-scores[doc_id],doc_id))[:a.k]
-        return fused,raw[1]+fuzzy[1]
+        return fused,raw[1]+alternate[1]
+    def _completion_retrieval(word):
+        candidate,took,_=completion_search(word)
+        hits,search_took=search(candidate)
+        return hits,took+search_took
     fields=['docs','vocab','method','bucket','samples','errors','correction_accuracy','false_correction_rate','candidate_recall','recall_at_k','hit_at_k','mrr_at_k','p50_ms','p95_ms','max_ms','correction_p95_ms','es_took_p95_ms','build_seconds','python_peak_mib','index_bytes','index_seconds']
     samplefields=['docs','method','bucket','clean','input','corrected','candidate_hit','recall','hit','rr','latency_ms','correction_ms','es_took_ms','error']
     with (out/'summary.csv').open('w',newline='') as sf,(out/'samples.csv').open('w',newline='') as rf:
@@ -120,7 +149,13 @@ def main():
                 for start in range(count,target,500):
                     lines=[]
                     for doc in docs[start:min(start+500,target)]:
-                        lines.extend([json.dumps({'index':{'_id':doc['id']}}),json.dumps({'content':doc['content']})])
+                        meta={'index':{'_id':doc['id']}}
+                        source={'content':doc['content']}
+                        if a.es_ngram:
+                            source['ngram_content']=doc['content']
+                            source['ngram_term']=list(set(doc['content'].split()))
+                            source['suggest']=[{'input':word,'weight':1} for word in set(doc['content'].split())]
+                        lines.extend([json.dumps(meta),json.dumps(source)])
                     r=call('POST','/'+index+'/_bulk',data='\n'.join(lines)+'\n')
                     if r.get('errors'): raise RuntimeError('bulk indexing failure')
                 call('POST','/'+index+'/_refresh'); cumulative_index+=time.perf_counter()-tick; count=target
@@ -146,10 +181,26 @@ def main():
                                 (f'term_fuzzy_d{d}','term_fuzzy',d),
                                 (f'term_parallel_fuzzy_bm25_d{d}','term_parallel_fuzzy_bm25',d),
                             ])
+                        if a.auto:
+                            methods.extend([(f'fuzzy_auto_d{d}','fuzzy_auto',d),(f'term_auto_d{d}','term_auto',d),(f'term_fuzzy_auto_d{d}','term_fuzzy_auto',d),(f'term_parallel_fuzzy_bm25_auto_d{d}','term_parallel_auto',d),(f'parallel_fuzzy_auto_bm25_d{d}','parallel_fuzzy_auto_bm25',d)])
+                    if a.es_ngram:
+                        methods.append((f'es_ngram_d{d}','es_ngram',d))
+                        if a.hybrid: methods.append((f'parallel_es_ngram_bm25_d{d}','parallel_es_ngram_bm25',d))
+                    if a.auto:
+                        methods.append((f'completion_auto_d{d}','completion_auto',d))
+                        if a.hybrid: methods.append((f'parallel_completion_bm25_d{d}','parallel_completion_bm25',d))
                     for spec in specs: methods.append((f'ngram_{spec}_d{d}',spec,d))
+                if a.auto and 0 in edits:
+                    methods.extend([('fuzzy_auto','fuzzy_auto',0),('term_auto','term_auto',1),('completion_auto','completion_auto',0)])
                 rng.shuffle(methods)
                 print(f'DOCS={target} VOCAB={len(df)} eligible={len(active)}',flush=True)
                 for name,kind,d in methods:
+                    if a.oom_rss_mib:
+                        import resource
+                        rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024
+                        if rss>a.oom_rss_mib:
+                            print(f'OOM guard: RSS {rss:.0f} MiB exceeds --oom-rss-mib={a.oom_rss_mib}; stopping benchmark.',flush=True)
+                            raise StopIteration
                     tracemalloc.start(); build=time.perf_counter(); obj=None
                     if kind=='sym':
                         obj=SymSpell(max_dictionary_edit_distance=d,prefix_length=max(7,d+1))
@@ -178,27 +229,35 @@ def main():
                                 viable=sorted(x for x in viable if x[0]<=d)
                                 candidate_hit=any(x[2]==test['clean'] for x in viable)
                                 if viable: corrected=viable[0][2]
-                        elif kind=='term' and d>0:
-                            r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':{'field':'content','suggest_mode':'missing','sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}}}})
-                            took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
+                        elif kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25','term_auto','term_fuzzy_auto','term_parallel_auto') and (d>0 or kind=='term_auto'):
+                            mode='missing' if kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25') else 'always'
+                            corrected,st,options=suggest(word,mode,d); took+=st
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
-                            if options: corrected=options[0]['text']
-                        elif kind in ('term_bm25','term_fuzzy','term_parallel_fuzzy_bm25') and d>0:
-                            r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':{'field':'content','suggest_mode':'missing','sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}}}})
-                            took+=r['took']; options=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
+                        elif kind in ('completion_auto','parallel_completion_bm25'):
+                            corrected,st,options=completion_search(word); took+=st
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
-                            if options: corrected=options[0]['text']
                         elif kind=='term' or kind in ('term_bm25','term_fuzzy','term_parallel_fuzzy_bm25'):
                             candidate_hit=(word==test['clean'])
                         elif name=='bm25_oracle': corrected=test['clean']
                         correction_ms=(time.perf_counter()-cstart)*1000
-                        if kind in ('parallel_fuzzy_bm25','term_parallel_fuzzy_bm25'):
-                            hybrid_word=corrected if kind=='term_parallel_fuzzy_bm25' else word
-                            hits,server=parallel_hybrid_search(hybrid_word,d)
+                        if kind in ('parallel_fuzzy_bm25','parallel_fuzzy_auto_bm25','term_parallel_fuzzy_bm25','term_parallel_auto','parallel_es_ngram_bm25','parallel_completion_bm25'):
+                            hybrid_word=corrected if kind in ('term_parallel_fuzzy_bm25','term_parallel_auto') else word
+                            combo={'parallel_es_ngram_bm25':'ngram','parallel_completion_bm25':'completion','term_parallel_auto':'auto','parallel_fuzzy_auto_bm25':'auto'}.get(kind,'fuzzy')
+                            hits,server=parallel_hybrid_search(hybrid_word,d,combo)
                         elif kind=='term_bm25':
                             hits,server=search(corrected)
                         elif kind=='term_fuzzy':
                             hits,server=search(corrected,d)
+                        elif kind=='term_parallel_fuzzy_bm25':
+                            hits,server=search(corrected,d)
+                        elif kind in ('term_fuzzy_auto','fuzzy_auto'):
+                            hits,server=search(corrected,'AUTO')
+                        elif kind in ('term_auto','term_parallel_auto'):
+                            hits,server=search(corrected)
+                        elif kind in ('completion_auto','parallel_completion_bm25'):
+                            hits,server=search(corrected)
+                        elif kind in ('es_ngram','parallel_es_ngram_bm25'):
+                            hits,server=ngram_search(word)
                         else:
                             hits,server=search(corrected,d if kind=='fuzzy' else None)
                         took+=server
@@ -207,9 +266,16 @@ def main():
                         try: execute(test)
                         except (requests.RequestException,RuntimeError): pass
                     records=defaultdict(list)
+                    oom_stop=False
                     for rep in range(a.repeats):
                         order=list(active); random.Random(42+rep).shuffle(order)
                         for test,relevant in order:
+                            if a.oom_rss_mib:
+                                import resource
+                                rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024
+                                if rss>a.oom_rss_mib:
+                                    print(f'OOM guard: RSS {rss:.0f} MiB exceeds --oom-rss-mib={a.oom_rss_mib}; stopping benchmark.',flush=True)
+                                    oom_stop=True; break
                             row={'docs':target,'method':name,'bucket':test['bucket'],'clean':test['clean'],'input':test['typo']}
                             try:
                                 corrected,ch,hits,lat,clat,took=execute(test)
@@ -217,6 +283,7 @@ def main():
                                 row.update(corrected=corrected,candidate_hit=ch,recall=len(set(hits)&relevant)/len(relevant),hit=int(bool(match)),rr=1/min(match) if match else 0,latency_ms=lat,correction_ms=clat,es_took_ms=took,error='')
                             except (requests.RequestException,RuntimeError) as e: row['error']=str(e)[:150]
                             records[test['bucket']].append(row); rw.writerow(row); rf.flush()
+                        if oom_stop: break
                     for bucket,rows in records.items():
                         good=[r for r in rows if not r['error']]; cs=[r for r in good if r['candidate_hit'] is not None]
                         mean=lambda key: statistics.mean(r[key] for r in good) if good else None
@@ -227,9 +294,12 @@ def main():
                         sw.writerow(row); sf.flush()
                     print(name,'done',flush=True)
                     del obj
+                    if oom_stop: raise StopIteration
+        except StopIteration:
+            print('Benchmark stopped by OOM guard; completed results are retained.',flush=True)
         finally:
             session.close()
-            run={'args':vars(a),'index':index,'seed':42,'note':'Index retained. Latency errors excluded from percentiles; inspect errors.'}
+            run={'args':vars(a),'index':index,'seed':42,'note':'Index retained. Latency errors excluded from percentiles; inspect errors. OOM guard uses process maximum RSS and is checked between corpus stages/methods.'}
             metadata=out/'dataset.json'
             if metadata.exists(): run['dataset']=json.loads(metadata.read_text(encoding='utf-8'))
             (out/'run.json').write_text(json.dumps(run,ensure_ascii=False,indent=2))
