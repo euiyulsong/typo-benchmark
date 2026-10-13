@@ -1,0 +1,28 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "1000,10000,50000",
+    "edits": "0,1,2,3",
+    "grams": "1,2,3,4,2-3,2-4",
+    "samples": 100,
+    "repeats": 1,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "hybrid": true,
+    "auto": true,
+    "es_ngram": true,
+    "oom_rss_mib": 8192,
+    "max_method_seconds": 180.0,
+    "corpus": "data/english/corpus.jsonl",
+    "queries": "data/english/queries.jsonl",
+    "output": "results/english-complete",
+    "timeout": 30.0
+  },
+  "index": "typo-grid-06ba1c5f8233",
+  "seed": 42,
+  "elasticsearch_version": "8.15.5",
+  "stopped_methods": [],
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors. RSS and per-method time guards apply to index build and measurements."
+}
