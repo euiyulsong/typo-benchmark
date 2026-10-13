@@ -1,0 +1,29 @@
+{
+  "args": {
+    "url": "http://localhost:9200",
+    "sizes": "50000",
+    "edits": "0,1,2",
+    "grams": "2-3",
+    "samples": 100,
+    "repeats": 3,
+    "candidate_limit": 100,
+    "k": 10,
+    "vocab": 10000,
+    "words": 30,
+    "hybrid": true,
+    "auto": true,
+    "es_ngram": false,
+    "method_filter": "bm25_raw,bm25_oracle,fuzzy_auto_d1,fuzzy_auto_d2,term_auto_d1,term_d1,term_fuzzy_d1,term_fuzzy_auto_d1,term_suggest_fuzzy_auto_d1,term_suggest_fuzzy_auto_d2,term_parallel_fuzzy_bm25_auto_d1,parallel_fuzzy_auto_bm25_d1",
+    "oom_rss_mib": 8192,
+    "max_method_seconds": 180.0,
+    "corpus": "data/english/corpus.jsonl",
+    "queries": "data/english/queries.jsonl",
+    "output": "results/english-term-fuzzy-auto",
+    "timeout": 30.0
+  },
+  "index": "typo-grid-b90a9a1e9ae1",
+  "seed": 42,
+  "elasticsearch_version": "8.15.5",
+  "stopped_methods": [],
+  "note": "Index retained. Latency errors excluded from percentiles; inspect errors. RSS and per-method time guards apply to index build and measurements."
+}

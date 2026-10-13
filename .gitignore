@@ -6,3 +6,5 @@ data/english/
 results/*-full/
 results/*-rerun/
 results/*-final/
+results/english-term-fuzzy-auto/
+results/korean-term-fuzzy-auto/

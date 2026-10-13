@@ -33,6 +33,7 @@ def main():
     p.add_argument('--hybrid', action='store_true', help='Add parallel BM25/fuzzy/suggestion combinations')
     p.add_argument('--auto', action='store_true', help='Add fuzzy AUTO, term suggestion AUTO, completion, and their combinations')
     p.add_argument('--es-ngram', action='store_true', help='Add Elasticsearch character ngram retrieval and parallel combinations')
+    p.add_argument('--method-filter', help='Optional comma-separated exact method names to run')
     p.add_argument('--oom-rss-mib', type=int, default=0, help='Abort cleanly when process RSS exceeds this MiB (0 disables)')
     p.add_argument('--max-method-seconds', type=float, default=0, help='Stop a method after this wall time in seconds (0 disables)')
     p.add_argument('--corpus', help='JSONL {id, content}; whitespace-tokenized single-term benchmark')
@@ -191,7 +192,7 @@ def main():
                                 (f'term_parallel_fuzzy_bm25_d{d}','term_parallel_fuzzy_bm25',d),
                             ])
                         if a.auto:
-                            methods.extend([(f'fuzzy_auto_d{d}','fuzzy_auto',d),(f'term_auto_d{d}','term_auto',d),(f'term_fuzzy_auto_d{d}','term_fuzzy_auto',d),(f'term_parallel_fuzzy_bm25_auto_d{d}','term_parallel_auto',d),(f'parallel_fuzzy_auto_bm25_d{d}','parallel_fuzzy_auto_bm25',d)])
+                            methods.extend([(f'fuzzy_auto_d{d}','fuzzy_auto',d),(f'term_auto_d{d}','term_auto',d),(f'term_fuzzy_auto_d{d}','term_fuzzy_auto',d),(f'term_suggest_fuzzy_auto_d{d}','term_suggest_fuzzy_auto',d),(f'term_parallel_fuzzy_bm25_auto_d{d}','term_parallel_auto',d),(f'parallel_fuzzy_auto_bm25_d{d}','parallel_fuzzy_auto_bm25',d)])
                     if a.es_ngram:
                         methods.append((f'es_ngram_d{d}','es_ngram',d))
                         if a.hybrid: methods.append((f'parallel_es_ngram_bm25_d{d}','parallel_es_ngram_bm25',d))
@@ -203,6 +204,9 @@ def main():
                 if a.auto and 0 in edits:
                     methods.extend([('fuzzy_auto','fuzzy_auto',0),('term_auto','term_auto',1),('completion_auto','completion_auto',0)])
                 methods.sort(key=lambda x:(x[1] in nsets and min(nsets[x[1]])==1, x[0]))
+                if a.method_filter:
+                    selected=set(a.method_filter.split(','))
+                    methods=[m for m in methods if m[0] in selected]
                 print(f'DOCS={target} VOCAB={len(df)} eligible={len(active)}',flush=True)
                 stopped_methods=set()
                 for name,kind,d in methods:
@@ -251,7 +255,7 @@ def main():
                                 viable=sorted(x for x in viable if x[0]<=d)
                                 candidate_hit=any(x[2]==test['clean'] for x in viable)
                                 if viable: corrected=viable[0][2]
-                        elif kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25','term_auto','term_fuzzy_auto','term_parallel_auto') and d>0:
+                        elif kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25','term_auto','term_fuzzy_auto','term_parallel_auto','term_suggest_fuzzy_auto') and d>0:
                             mode='missing' if kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25') else 'always'
                             corrected,st,options=suggest(word,mode,d); took+=st
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
@@ -272,7 +276,7 @@ def main():
                             hits,server=search(corrected,d)
                         elif kind=='term_parallel_fuzzy_bm25':
                             hits,server=search(corrected,d)
-                        elif kind in ('term_fuzzy_auto','fuzzy_auto'):
+                        elif kind in ('term_fuzzy_auto','term_suggest_fuzzy_auto','fuzzy_auto'):
                             hits,server=search(corrected,'AUTO')
                         elif kind in ('term_auto','term_parallel_auto'):
                             hits,server=search(corrected)
