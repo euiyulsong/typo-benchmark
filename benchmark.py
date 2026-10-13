@@ -34,6 +34,7 @@ def main():
     p.add_argument('--auto', action='store_true', help='Add fuzzy AUTO, term suggestion AUTO, completion, and their combinations')
     p.add_argument('--es-ngram', action='store_true', help='Add Elasticsearch character ngram retrieval and parallel combinations')
     p.add_argument('--oom-rss-mib', type=int, default=0, help='Abort cleanly when process RSS exceeds this MiB (0 disables)')
+    p.add_argument('--max-method-seconds', type=float, default=0, help='Stop a method after this wall time in seconds (0 disables)')
     p.add_argument('--corpus', help='JSONL {id, content}; whitespace-tokenized single-term benchmark')
     p.add_argument('--queries', help='JSONL {clean, typo, relevant_ids}; clean/typo must each be ONE term')
     p.add_argument('--output', default='results')
@@ -43,7 +44,7 @@ def main():
     edits=sorted(set(map(int,a.edits.split(','))))
     specs=a.grams.split(',')
     nsets={s: list(range(int(s.split('-')[0]),int(s.split('-')[-1])+1)) for s in specs}
-    if min(sizes)<1 or not set(edits)<=set(range(4)) or min(a.samples,a.repeats,a.k,a.vocab,a.words,a.candidate_limit)<1 or a.timeout<=0 or (a.oom_rss_mib<0) or any(min(ns)<1 for ns in nsets.values()):
+    if min(sizes)<1 or not set(edits)<=set(range(4)) or min(a.samples,a.repeats,a.k,a.vocab,a.words,a.candidate_limit)<1 or a.timeout<=0 or (a.oom_rss_mib<0) or a.max_method_seconds<0 or any(min(ns)<1 for ns in nsets.values()):
         p.error('positive values required; edit distances supported: 0..3')
     if bool(a.corpus)!=bool(a.queries): p.error('--corpus and --queries must be supplied together')
     out=Path(a.output); out.mkdir(parents=True,exist_ok=True)
@@ -82,10 +83,13 @@ def main():
             raise RuntimeError(f"Cannot connect to Elasticsearch at {a.url}. Start Elasticsearch or pass its address with --url. ({e})") from e
         except requests.Timeout as e:
             raise RuntimeError(f"Elasticsearch request timed out at {a.url} (timeout={a.timeout}s). Increase --timeout or check the server. ({e})") from e
-        r.raise_for_status(); result=r.json()
+        if not r.ok:
+            raise RuntimeError(f'Elasticsearch HTTP {r.status_code}: {r.text[:500]}')
+        result=r.json()
         if result.get('timed_out') or result.get('_shards',{}).get('failed'): raise RuntimeError('ES timeout/shard failure')
         return result
     index='typo-grid-'+uuid.uuid4().hex[:12]
+    es_version=None
     try:
         settings={'number_of_shards':1,'number_of_replicas':0,'refresh_interval':'-1'}
         mappings={'properties':{'content':{'type':'text','analyzer':'whitespace','similarity':'BM25'}}}
@@ -101,14 +105,14 @@ def main():
     print('New index:',index,flush=True)
     def search(word,d=None):
         opts={'query':word}
-        if d is not None: opts.update(fuzziness='AUTO' if d=='AUTO' else d,prefix_length=0,max_expansions=a.candidate_limit)
+        if d is not None: opts.update(fuzziness='AUTO' if d=='AUTO' else d,prefix_length=0,max_expansions=max(50,a.candidate_limit))
         r=call('POST','/'+index+'/_search?request_cache=false',{'size':a.k,'_source':False,'track_total_hits':False,'timeout':f'{int(a.timeout*1000)}ms','query':{'match':{'content':opts}}})
         return [h['_id'] for h in r['hits']['hits']],r['took']
     def ngram_search(word):
         r=call('POST','/'+index+'/_search?request_cache=false',{'size':a.k,'_source':False,'track_total_hits':False,'query':{'bool':{'should':[{'match':{'ngram_content':{'query':word,'operator':'or'}}},{'term':{'ngram_term':word.lower()}}],'minimum_should_match':1}}})
         return [h['_id'] for h in r['hits']['hits']],r['took']
     def suggest(word,mode,d):
-        term={'field':'content','suggest_mode':mode,'sort':'score','size':a.candidate_limit,'max_edits':d,'prefix_length':0,'min_word_length':1}
+        term={'field':'content','suggest_mode':mode,'sort':'score','size':a.candidate_limit,'max_edits':max(1,min(2,d)),'prefix_length':0,'min_word_length':1}
         r=call('POST','/'+index+'/_search?request_cache=false',{'size':0,'suggest':{'spell':{'text':word,'term':term}}})
         opts=r['suggest']['spell'][0]['options'] if r['suggest']['spell'] else []
         return (opts[0]['text'] if opts else word),r['took'],opts
@@ -120,7 +124,9 @@ def main():
         """Run requested retrievals concurrently, then fuse ranked IDs by RRF."""
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=3) as executor:
-            futures=[executor.submit(search,word,None)]
+            futures=[]
+            if kind not in ('ngram','fuzzy_ngram'):
+                futures.append(executor.submit(search,word,None))
             if kind in ('ngram','fuzzy_ngram'):
                 futures.append(executor.submit(ngram_search,word))
             if kind in ('fuzzy','auto','fuzzy_ngram'):
@@ -171,6 +177,7 @@ def main():
                     if relevant: active.append((test,relevant))
                 if not active: print('No eligible qrels at',target); continue
                 index_bytes=call('GET','/'+index+'/_stats/store')['indices'][index]['primaries']['store']['size_in_bytes']
+                es_version=call('GET','/')['version']['number']
                 methods=[('bm25_raw',None,None),('bm25_oracle',None,None)]
                 for d in edits:
                     methods.append((f'symspell_d{d}','sym',d))
@@ -195,9 +202,11 @@ def main():
                     for spec in specs: methods.append((f'ngram_{spec}_d{d}',spec,d))
                 if a.auto and 0 in edits:
                     methods.extend([('fuzzy_auto','fuzzy_auto',0),('term_auto','term_auto',1),('completion_auto','completion_auto',0)])
-                rng.shuffle(methods)
+                methods.sort(key=lambda x:(x[1] in nsets and min(nsets[x[1]])==1, x[0]))
                 print(f'DOCS={target} VOCAB={len(df)} eligible={len(active)}',flush=True)
+                stopped_methods=set()
                 for name,kind,d in methods:
+                    method_started=time.monotonic()
                     if a.oom_rss_mib:
                         import resource
                         rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024
@@ -205,14 +214,24 @@ def main():
                             print(f'OOM guard: RSS {rss:.0f} MiB exceeds --oom-rss-mib={a.oom_rss_mib}; stopping benchmark.',flush=True)
                             raise StopIteration
                     tracemalloc.start(); build=time.perf_counter(); obj=None
+                    build_timed_out=False
                     if kind=='sym':
                         obj=SymSpell(max_dictionary_edit_distance=d,prefix_length=max(7,d+1))
-                        for term,freq in df.items(): obj.create_dictionary_entry(term,freq)
+                        for term,freq in df.items():
+                            obj.create_dictionary_entry(term,freq)
+                            if a.max_method_seconds and time.monotonic()-method_started>a.max_method_seconds:
+                                build_timed_out=True; break
                     elif kind in nsets:
                         obj=defaultdict(set)
-                        for term in df:
+                        for term_i,term in enumerate(df):
                             for gram in grams(term,nsets[kind]): obj[gram].add(term)
+                            if term_i%1000==0 and a.max_method_seconds and time.monotonic()-method_started>a.max_method_seconds:
+                                build_timed_out=True; break
                     build=time.perf_counter()-build; peak=tracemalloc.get_traced_memory()[1]/2**20; tracemalloc.stop()
+                    if build_timed_out:
+                        print(f'Method time guard: {name} build exceeded {a.max_method_seconds}s; method skipped.',flush=True)
+                        stopped_methods.add(name)
+                        continue
                     def execute(test):
                         word=test['typo']; corrected=word; candidate_hit=None; took=0
                         start=time.perf_counter(); cstart=start
@@ -232,7 +251,7 @@ def main():
                                 viable=sorted(x for x in viable if x[0]<=d)
                                 candidate_hit=any(x[2]==test['clean'] for x in viable)
                                 if viable: corrected=viable[0][2]
-                        elif kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25','term_auto','term_fuzzy_auto','term_parallel_auto') and (d>0 or kind=='term_auto'):
+                        elif kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25','term_auto','term_fuzzy_auto','term_parallel_auto') and d>0:
                             mode='missing' if kind in ('term','term_bm25','term_fuzzy','term_parallel_fuzzy_bm25') else 'always'
                             corrected,st,options=suggest(word,mode,d); took+=st
                             candidate_hit=any(x['text']==test['clean'] for x in options) or word==test['clean']
@@ -265,14 +284,16 @@ def main():
                             hits,server=search(corrected,d if kind=='fuzzy' else None)
                         took+=server
                         return corrected,candidate_hit,hits,(time.perf_counter()-start)*1000,correction_ms,took
-                    for test,_ in active[:min(5,len(active))]:
-                        try: execute(test)
-                        except (requests.RequestException,RuntimeError): pass
                     records=defaultdict(list)
                     oom_stop=False
+                    request_error=False
+                    method_timed_out=False
                     for rep in range(a.repeats):
                         order=list(active); random.Random(42+rep).shuffle(order)
                         for test,relevant in order:
+                            if a.max_method_seconds and time.monotonic()-method_started > a.max_method_seconds:
+                                print(f'Method time guard: {name} exceeded {a.max_method_seconds}s; stopping this method.',flush=True)
+                                method_timed_out=True; break
                             if a.oom_rss_mib:
                                 import resource
                                 rss=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss/1024
@@ -284,9 +305,16 @@ def main():
                                 corrected,ch,hits,lat,clat,took=execute(test)
                                 match=[i+1 for i,x in enumerate(hits) if x in relevant]
                                 row.update(corrected=corrected,candidate_hit=ch,recall=len(set(hits)&relevant)/len(relevant),hit=int(bool(match)),rr=1/min(match) if match else 0,latency_ms=lat,correction_ms=clat,es_took_ms=took,error='')
-                            except (requests.RequestException,RuntimeError) as e: row['error']=str(e)[:150]
+                            except (requests.RequestException,RuntimeError) as e:
+                                row['error']=str(e)[:150]
+                                request_error=True
                             records[test['bucket']].append(row); rw.writerow(row); rf.flush()
-                        if oom_stop: break
+                            failures=sum(bool(r.get('error')) for bucket_rows in records.values() for r in bucket_rows)
+                            if request_error and failures>=max(3, math.ceil((len(order)*a.repeats)*0.5)):
+                                print(f'Method error guard: {name} reached {failures} failures; skipping remaining samples.',flush=True)
+                                method_timed_out=True
+                                break
+                        if oom_stop or method_timed_out: break
                     for bucket,rows in records.items():
                         good=[r for r in rows if not r['error']]; cs=[r for r in good if r['candidate_hit'] is not None]
                         mean=lambda key: statistics.mean(r[key] for r in good) if good else None
@@ -297,12 +325,20 @@ def main():
                         sw.writerow(row); sf.flush()
                     print(name,'done',flush=True)
                     del obj
+                    if method_timed_out:
+                        stopped_methods.add(name)
+                        continue
                     if oom_stop: raise StopIteration
+                    if request_error:
+                        errs=sum(len([r for r in rows if r['error']]) for rows in records.values())
+                        total=sum(len(rows) for rows in records.values())
+                        if total and errs/total >= 0.5:
+                            raise RuntimeError(f'Stopping: {errs}/{total} requests failed for {name}; inspect ES/method compatibility.')
         except StopIteration:
             print('Benchmark stopped by OOM guard; completed results are retained.',flush=True)
         finally:
             session.close()
-            run={'args':vars(a),'index':index,'seed':42,'note':'Index retained. Latency errors excluded from percentiles; inspect errors. OOM guard uses process maximum RSS and is checked between corpus stages/methods.'}
+            run={'args':vars(a),'index':index,'seed':42,'elasticsearch_version':es_version if 'es_version' in locals() else None,'stopped_methods':sorted(stopped_methods) if 'stopped_methods' in locals() else [],'note':'Index retained. Latency errors excluded from percentiles; inspect errors. RSS and per-method time guards apply to index build and measurements.'}
             metadata=out/'dataset.json'
             if metadata.exists(): run['dataset']=json.loads(metadata.read_text(encoding='utf-8'))
             (out/'run.json').write_text(json.dumps(run,ensure_ascii=False,indent=2))

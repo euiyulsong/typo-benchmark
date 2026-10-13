@@ -56,28 +56,50 @@ python3 benchmark.py --sizes 100 --vocab 100 --samples 5 --repeats 1 --grams 2,3
 
 `--auto`는 Elasticsearch `fuzziness=AUTO`, `term` suggester `suggest_mode=always`(정상어도 후보로 바꿀 수 있어 false correction도 확인), 그리고 completion suggester(prefix completion)를 비교합니다. fuzzy/term/completion을 raw BM25 및 term→fuzzy와 함께 평가하고, `--hybrid`를 켜면 raw BM25와 해당 검색 결과의 RRF 병렬 조합도 추가합니다. Completion은 typo 교정기가 아니라 입력이 사전 prefix일 때 이어지는 토큰을 제안하는 방식이므로, typo 검색에선 후보 hit/검색 품질이 낮을 수 있습니다. prefix query 이외의 입력을 completion이 고치는 것으로 해석하지 마세요.
 
-`--es-ngram`은 별도 2–3 character ngram analyzer 필드로 직접 검색합니다. `--hybrid`와 같이 쓰면 raw BM25+ngram 병렬 RRF(`parallel_es_ngram_bm25_d*`)와 fuzzy+ngram 병렬 RRF(`parallel_fuzzy_es_ngram_d*`)를 비교합니다. 3-way raw BM25+fuzzy+ngram을 따로 보고 싶다면 향후 옵션 확장이 필요하며, 현재 두 조합은 비교가 쉽도록 개별 경로입니다. 기존 `ngram_*`은 Python 메모리 후보 교정 방식으로, 둘은 구현과 측정 범위가 다릅니다. completion 및 ngram의 추가 필드로 ES 색인 크기/색인 시간이 증가합니다.
+`--es-ngram`은 별도 2–3 character ngram analyzer 필드로 직접 검색합니다. `--hybrid`와 같이 쓰면 raw BM25+ngram(`parallel_es_ngram_bm25_d*`) 및 fuzzy+ngram(`parallel_fuzzy_es_ngram_d*`)을 병렬 실행해 RRF로 합칩니다. 기존 `ngram_*`은 Python 메모리 후보 교정 방식으로, 둘은 구현과 측정 범위가 다릅니다. completion 및 ngram의 추가 필드로 ES 색인 크기/색인 시간이 증가합니다.
 
 대량 실행에서는 결과 폴더를 새 경로로 지정해 기존 결과를 덮어쓰지 말고, 완료 뒤 다음 스크립트로 특정 corpus 크기의 비교용 compact CSV를 만들 수 있습니다:
 
 ```bash
-python3 summarize_results.py results/english-full/summary.csv --docs 50000 --output results/english-full/summary-50000.csv
+python3 summarize_results.py results/english-final/summary.csv --docs 50000 --output results/english-final/summary-50000.csv
 ```
 
-단계적 corpus 크기 실험은 기존처럼 모든 단계에 같은 데이터 prefix를 사용하며, corpus 파일이 각 요청 크기보다 작으면 실제 크기까지만 진행합니다. 1억 문서를 시도할 땐 우선 충분한 디스크/RAM이 있는 전용 Elasticsearch를 준비하고 OOM guard를 지정하세요. Guard는 benchmark 프로세스의 RSS를 방법/요청 경계에서 확인해 초과 시 결과 파일을 flush한 뒤 종료합니다. Elasticsearch JVM/컨테이너 OOM은 별도 감시해야 하며, ES가 OOM으로 죽는 것을 이 프로세스가 사전에 보장해 막지는 못합니다.
+단계적 corpus 크기 실험은 기존처럼 모든 단계에 같은 데이터 prefix를 사용하며, corpus 파일이 각 요청 크기보다 작으면 실제 크기까지만 진행합니다. `--max-method-seconds`는 과도하게 느린 방법을 건너뛰며, OOM guard는 benchmark 프로세스의 RSS를 확인합니다. Elasticsearch JVM/컨테이너 OOM은 별도 감시해야 합니다.
 
 ```bash
 python3 benchmark.py --corpus large-corpus.jsonl --queries queries.jsonl \
   --sizes 1000,10000,100000,1000000,10000000,100000000 \
   --edits 0,1,2 --hybrid --auto --es-ngram \
-  --samples 100 --repeats 3 --oom-rss-mib 8192 --output results/scale
+  --samples 100 --repeats 3 --oom-rss-mib 8192 --max-method-seconds 300 --output results/scale
 ```
 
-실험 종료 후 `summary.csv`는 MRR/Hit, correction/candidate 지표와 p50/p95/max, ES took, build/Python peak, ES index bytes/index time를 기록합니다. `--oom-rss-mib` guard는 요청/방법 경계의 프로세스 peak RSS를 확인합니다(`resource.getrusage`는 현재 RSS가 아니라 실행 이후 peak). `samples.csv`는 query 단위 품질/지연/error를 보존합니다. 1억까지의 실행은 긴 시간과 대용량 디스크/메모리가 필요하므로, corpus가 충분하고 실제 실행 환경을 확보한 후 진행하세요. 크기가 커질수록 `--samples`를 적절히 제한하고, ES heap/disk를 포함한 별도 자원 모니터링을 권장합니다.
+실험 종료 후 `summary.csv`는 MRR/Hit, correction/candidate 지표와 p50/p95/max, ES took, build/Python peak, ES index bytes/index time를 기록합니다. `--oom-rss-mib`는 프로세스 최대 RSS 기준이고 `--max-method-seconds`는 느린 method의 남은 query를 건너뜁니다. `samples.csv`는 query 단위 품질/지연/error를 보존합니다. ES heap/disk도 별도 모니터링하세요.
 
-### 확장 기능 smoke test (2026-10-13)
+### 확장 기능 재실험 (2026-10-13)
 
-Elasticsearch 8.15.5 단일 노드에서 `--sizes 100 --vocab 20 --samples 5 --repeats 1 --grams 2 --edits 0,1 --auto --es-ngram --hybrid --oom-rss-mib 4096`로 모든 신규 경로를 실행했습니다. smoke 결과는 임시 `/tmp/opencode/typo-smoke-final`에 생성했으며, 작은 합성 데이터이므로 제품 성능 결론으로 해석하지 않습니다. 1천만/1억 단계 및 기존 전체 실험의 재실행은 아직 수행되지 않았습니다. 이 실행 환경은 대규모 corpus를 보유하지 않고 ES도 실험을 위해 임시 기동한 상태입니다. 전체 재실험에는 별도 대용량 corpus와 자원/실행 시간이 필요합니다.
+기존 저장 corpus(영어 50k, 한국어 50k)로 확장 그리드를 재실행했습니다. 재현용 산출물은 [`results/english-final/`](results/english-final/) 및 [`results/korean-final/`](results/korean-final/)의 `summary.csv`, `samples.csv`, `run.json`, 50k 요약 CSV입니다. 전체 50k 단계에서 한국어 85개 method는 모두 완료, 영어는 time guard가 적용된 22개 method가 기록됐고 그중 `ngram_2-3_d3`만 일부 요청 실패/중단이 있어 상세 CSV의 error와 sample count를 확인해야 합니다. 저장소에 있는 corpus가 각 언어 50k이므로 1억 단계는 실행하지 않았습니다.
+
+`--max-method-seconds`는 Python SymSpell/ngram처럼 corpus vocab에 따라 비용이 크게 증가하는 method의 구축과 query 평가를 제어합니다. 제한 시간 동안 method를 완료하지 못하면 건너뜁니다. method HTTP errors가 절반 이상이면 run을 중단합니다. 최종 재실행의 두 언어 모두 API 오류 0건이었습니다. 신규 옵션 그리드는 ES 8.15.5, 1 shard, 단일 노드, repeats=1이며 기존 2026-10-11 결과와 환경 및 반복 수가 다를 수 있습니다.
+
+### 재실험 결과 메모 (50,000문서, typo_1)
+
+아래 p95는 client end-to-end latency입니다. 샘플은 언어당 100 query입니다.
+
+| 언어 | 방법 | Hit@10 | MRR@10 | p95 ms |
+|---|---|---:|---:|---:|
+| 한국어 | fuzzy d1 | 74% | 0.450 | 2.87 |
+| 한국어 | ES ngram d1 | 0% | 0.000 | 1.27 |
+| 한국어 | fuzzy + ES ngram 병렬 RRF d1 | 74% | 0.450 | 3.30 |
+| 한국어 | Python bigram correction d1 | 53% | 0.361 | 1.70 |
+| 한국어 | Python unigram correction d1 | 58% | 0.400 | 17.92 |
+| 영어 | fuzzy d1 | 36% | 0.207 | 1.74 |
+| 영어 | ES ngram d1 | 0% | 0.000 | 1.44 |
+
+Fuzzy+ES-ngram 병렬 d1은 한국어에서 Hit/MRR이 fuzzy 단독과 같고 p95 3.30ms(단독 2.87ms)였습니다. 영어에서는 50k fuzzy+ngram 행이 제한 시간 때문에 미완료라 비교 가능한 점수로 보고하지 않습니다.
+
+ES ngram 직접 검색은 이 단어 단위 합성 typo/qrel에서 관련 결과를 찾지 못했습니다. fuzzy+ngram 병렬은 fuzzy 단독 품질을 올리지 못하고 p95가 약 0.43ms 증가했습니다. 따라서 이 데이터에서는 fuzzy d1 단독이 병렬 fuzzy+ngram보다 단순하고 빠릅니다. 한국어 term `suggest_mode=always`는 clean query를 많이 잘못 바꾸어 clean Hit@10이 18%에 그쳤습니다.
+
+영어는 50k 그리드에서 Python 후보 교정 계열의 일부가 45초/method 제한으로 생략되어 compact 결과 파일의 실제 범위를 확인하세요. 10k에서 Python unigram ngram은 typo_1 Hit@10 36.5%, p95 69.6ms였고, ES ngram direct는 Hit 0%, p95 약 1.4ms였습니다. 이 두 구현은 후보 교정과 직접 ngram 검색으로 동작이 다르며, 결과는 합성 query 기준입니다.
 
 매번 새 `typo-grid-*` 인덱스 생성. 기존 인덱스를 변경/삭제하지 않습니다. 종료 후 출력된 테스트 인덱스만 직접 삭제하세요. 인증은 ES_API_KEY 또는 ES_USER/ES_PASSWORD 환경변수로 설정합니다. TLS 인증서 검증은 켜져 있습니다.
 

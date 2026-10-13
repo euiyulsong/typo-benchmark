@@ -3,3 +3,6 @@ __pycache__/
 .env
 data/korean/
 data/english/
+results/*-full/
+results/*-rerun/
+results/*-final/
