@@ -76,6 +76,51 @@ Hit@10/MRR@10은 최종 검색 품질이며, p95는 교정/제안과 검색을 �
 | 한국어 | Term→(fuzzy AUTO + BM25 RRF) d1 | 44% (79%) | 71% / **0.462** | 6% / 0.045 | 0% / 0.000 | 6.06 / 5.87 / 5.63 / 5.64 |
 | 한국어 | Fuzzy AUTO + BM25 RRF d1 | **82% (0%)** | **74% / 0.445** | 6% / 0.045 | 0% / 0.000 | 4.58 / 4.61 / 4.62 / 4.35 |
 
+### 영어·한국어 통합 평균 — typo별 method 비교
+
+영어와 한국어의 50k 추가 실험 결과에서 각 typo bucket마다 method의 Hit@10, MRR@10, p95를 언어 간 산술평균했습니다. clean 행의 Hit@10/MRR은 clean query 성능이며 괄호 안은 false correction 비율의 언어 평균입니다. 각 언어는 bucket당 query 100개를 3회 반복했습니다. BM25 raw와 oracle은 기준선으로 포함했고, 별도의 전체 method 평균은 내지 않았습니다.
+
+| Typo bucket | Method | 평균 Hit@10 | 평균 MRR@10 | 평균 p95 (ms) |
+|---|---|---:|---:|---:|
+| clean | BM25 raw | 60.0% (false correction 0%) | 0.388 | 1.97 |
+| clean | Fuzzy AUTO d1 | 59.5% (0%) | 0.369 | 4.03 |
+| clean | Fuzzy AUTO d2 | 59.5% (0%) | 0.369 | 3.22 |
+| clean | Term→BM25 d1 | 67.5% (16%) | 0.439 | 2.38 |
+| clean | Term→fixed fuzzy d1 | 66.5% (16%) | 0.391 | 2.59 |
+| clean | Term→fuzzy AUTO d1 | 40.0% (85.5%) | 0.200 | 4.50 |
+| clean | Term→fuzzy AUTO d2 | 35.0% (95%) | 0.165 | 5.59 |
+| clean | Term→(fuzzy AUTO + BM25 RRF) d1 | 39.5% (85.5%) | 0.200 | 5.64 |
+| clean | Fuzzy AUTO + BM25 RRF d1 | 68.5% (0%) | 0.424 | 4.66 |
+| typo_1 | BM25 raw | 0% | 0.000 | 1.80 |
+| typo_1 | Fuzzy AUTO d1 | 57.0% | 0.321 | 3.97 |
+| typo_1 | Fuzzy AUTO d2 | 57.0% | 0.321 | 3.30 |
+| typo_1 | Term→BM25 d1 | 50.0% | 0.319 | 2.68 |
+| typo_1 | Term→fixed fuzzy d1 | 53.5% | 0.311 | 2.91 |
+| typo_1 | Term→fuzzy AUTO d1 | 50.5% | 0.305 | 4.47 |
+| typo_1 | Term→fuzzy AUTO d2 | 49.0% | 0.301 | 5.51 |
+| typo_1 | Term→(fuzzy AUTO + BM25 RRF) d1 | 57.0% | 0.340 | 5.46 |
+| typo_1 | Fuzzy AUTO + BM25 RRF d1 | 57.0% | 0.321 | 4.54 |
+| typo_2 | BM25 raw | 0% | 0.000 | 1.81 |
+| typo_2 | Fuzzy AUTO d1 | 15.5% | 0.084 | 3.85 |
+| typo_2 | Fuzzy AUTO d2 | 15.5% | 0.084 | 3.17 |
+| typo_2 | Term→BM25 d1 | 0% | 0.000 | 2.59 |
+| typo_2 | Term→fixed fuzzy d1 | 0% | 0.000 | 2.70 |
+| typo_2 | Term→fuzzy AUTO d1 | 15.5% | 0.084 | 4.38 |
+| typo_2 | Term→fuzzy AUTO d2 | 20.0% | 0.112 | 5.53 |
+| typo_2 | Term→(fuzzy AUTO + BM25 RRF) d1 | 15.5% | 0.084 | 5.32 |
+| typo_2 | Fuzzy AUTO + BM25 RRF d1 | 15.5% | 0.084 | 4.59 |
+| typo_3 | BM25 raw | 0% | 0.000 | 1.83 |
+| typo_3 | Fuzzy AUTO d1 | 0% | 0.000 | 3.58 |
+| typo_3 | Fuzzy AUTO d2 | 0% | 0.000 | 3.05 |
+| typo_3 | Term→BM25 d1 | 0% | 0.000 | 2.46 |
+| typo_3 | Term→fixed fuzzy d1 | 0% | 0.000 | 2.67 |
+| typo_3 | Term→fuzzy AUTO d1 | 0% | 0.000 | 4.25 |
+| typo_3 | Term→fuzzy AUTO d2 | 0% | 0.000 | 5.36 |
+| typo_3 | Term→(fuzzy AUTO + BM25 RRF) d1 | 0% | 0.000 | 5.32 |
+| typo_3 | Fuzzy AUTO + BM25 RRF d1 | 0% | 0.000 | 4.43 |
+
+clean의 BM25 raw 평균 Hit@10은 raw 요약 CSV의 언어별 값(영어 39%, 한국어 81%)을 기준으로 계산했습니다. 개별 신규 실험 결과는 위 언어별 표와 [영어 CSV](results/english-term-fuzzy-auto/summary.csv), [한국어 CSV](results/korean-term-fuzzy-auto/summary.csv)를 참조하세요.
+
 추가 비교에서 term suggestion을 AUTO fuzzy에 앞세운 것은 두 언어 모두 clean query를 크게 훼손했습니다(영어 false correction 92–97%, 한국어 79–93%). typo_1에서도 suggestion 없는 fuzzy AUTO보다 품질 우위가 없고 더 느렸습니다. d2는 영어 typo_2를 21%까지 찾았지만 p95 5.27ms였고, 한국어는 19%였지만 p95 5.79ms였습니다. d3 typo는 이 단어 단위 whitespace 실험의 모든 비교군에서 Hit@10 0%였습니다. 따라서 term suggestion 결과를 무조건 적용하는 조합은 기본 경로로 권하지 않습니다. 실제 서비스라면 confidence/원문 병행 검색, analyzer 및 다중 토큰 query를 별도로 평가해야 합니다.
 
 ### 관찰
